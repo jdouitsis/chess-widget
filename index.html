@@ -141,6 +141,14 @@
       <button class="gmail-btn" onclick="sendToCoach()">&#9993; Send to Coach via Gmail</button>
     </div>
     <div class="card">
+      <div class="card-label">Load from Image</div>
+      <input type="file" id="img-input" accept="image/*" style="display:none" />
+      <div class="btn-row">
+        <button onclick="document.getElementById('img-input').click()">&#128247; Upload board screenshot</button>
+      </div>
+      <div id="img-status" style="font-size:11px;color:var(--text3);margin-top:8px;line-height:1.5"></div>
+    </div>
+    <div class="card">
       <div class="card-label">Load Position (FEN)</div>
       <input class="fen-input" id="fen-input" placeholder="Paste FEN and press Enter&#8230;" />
       <div class="btn-row">
@@ -654,6 +662,104 @@ function sendToCoach(){
   const line=moveHistory.map((m,i)=>i%2===0?`${Math.floor(i/2)+1}.${m.notation}`:m.notation).join(" ");
   window.open("https://mail.google.com/mail/?view=cm&fs=1&to="+encodeURIComponent(coachEmail)+"&su="+encodeURIComponent("Chess puzzle solution")+"&body="+encodeURIComponent("Hi Coach Mark,\n\nHere is my solution:\n\n"+(line||"(no moves yet)")+"\n\nFEN: "+fen+"\n\nThanks!"),"_blank");
 }
+// ─── IMAGE → BOARD ──────────────────────────────────────────────────────────
+async function detectBoardFromImage(img){
+  const stat=document.getElementById("img-status");
+  const size=Math.min(img.naturalWidth,img.naturalHeight);
+  const sq=Math.floor(size/8), boardSize=sq*8;
+  const sc=document.createElement("canvas");
+  sc.width=sc.height=boardSize;
+  const sctx=sc.getContext("2d");
+  const ox=Math.floor((img.naturalWidth-boardSize)/2);
+  const oy=Math.floor((img.naturalHeight-boardSize)/2);
+  sctx.drawImage(img,ox,oy,boardSize,boardSize,0,0,boardSize,boardSize);
+
+  stat.textContent="Building templates…";
+  await new Promise(r=>setTimeout(r,0));
+  const tmpl=await buildTemplates(sq);
+
+  stat.textContent="Matching squares…";
+  await new Promise(r=>setTimeout(r,0));
+
+  const newBoard=Array(64).fill(null);
+  let detected=0, empties=0;
+  for(let r=0;r<8;r++) for(let c=0;c<8;c++){
+    const isLight=(r+c)%2===0;
+    const data=sctx.getImageData(c*sq,r*sq,sq,sq).data;
+    const emptyT=tmpl.find(t=>t.key===null && t.isLight===isLight);
+    let best=null, bestScore=diffPx(data,emptyT.data);
+    const emptyScore=bestScore;
+    for(const t of tmpl){
+      if(t.key===null||t.isLight!==isLight) continue;
+      const s=diffPx(data,t.data);
+      if(s<bestScore){ bestScore=s; best=t.key; }
+    }
+    // Require piece beat empty by margin
+    if(best && bestScore < emptyScore*0.92){
+      newBoard[r*8+c]= best[0]==='w' ? best[1] : best[1].toLowerCase();
+      detected++;
+    } else empties++;
+  }
+  return {fen: boardToFEN(newBoard,"w",null,{wK:true,wQ:true,bK:true,bQ:true}), detected, empties};
+}
+
+function diffPx(a,b){
+  let s=0; const stride=16;
+  for(let i=0;i<a.length;i+=stride) s+=Math.abs(a[i]-b[i])+Math.abs(a[i+1]-b[i+1])+Math.abs(a[i+2]-b[i+2]);
+  return s;
+}
+
+async function buildTemplates(sq){
+  const pieces=['wK','wQ','wR','wB','wN','wP','bK','bQ','bR','bB','bN','bP'];
+  const out=[];
+  for(const isLight of [true,false]){
+    out.push({key:null,isLight,data:await renderTemplate(null,isLight,sq)});
+    for(const p of pieces) out.push({key:p,isLight,data:await renderTemplate(p,isLight,sq)});
+  }
+  return out;
+}
+
+function renderTemplate(pieceKey,isLight,size){
+  return new Promise(resolve=>{
+    const c=document.createElement("canvas");
+    c.width=c.height=size;
+    const ctx=c.getContext("2d");
+    ctx.fillStyle=isLight?"#F0D9B5":"#B58863";
+    ctx.fillRect(0,0,size,size);
+    if(!pieceKey){ resolve(ctx.getImageData(0,0,size,size).data); return; }
+    const sym=document.getElementById("pc-"+pieceKey);
+    if(!sym){ resolve(ctx.getImageData(0,0,size,size).data); return; }
+    const svgStr=`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 45 45" width="${size}" height="${size}">${sym.innerHTML}</svg>`;
+    const blob=new Blob([svgStr],{type:"image/svg+xml"});
+    const url=URL.createObjectURL(blob);
+    const im=new Image();
+    im.onload=()=>{ ctx.drawImage(im,0,0,size,size); URL.revokeObjectURL(url); resolve(ctx.getImageData(0,0,size,size).data); };
+    im.onerror=()=>{ URL.revokeObjectURL(url); resolve(ctx.getImageData(0,0,size,size).data); };
+    im.src=url;
+  });
+}
+
+function onImageUpload(e){
+  const f=e.target.files[0]; if(!f) return;
+  const stat=document.getElementById("img-status");
+  stat.textContent="Loading image…";
+  const img=new Image();
+  img.onload=async()=>{
+    try{
+      const {fen,detected,empties}=await detectBoardFromImage(img);
+      document.getElementById("fen-input").value=fen;
+      loadFEN();
+      stat.innerHTML=`Detected ${detected} pieces, ${empties} empty.<br>Best with lichess screenshots. Edit FEN if wrong.`;
+    }catch(err){
+      stat.textContent="Detection failed: "+err.message;
+    }
+    URL.revokeObjectURL(img.src);
+  };
+  img.onerror=()=>{ stat.textContent="Could not load image."; URL.revokeObjectURL(img.src); };
+  img.src=URL.createObjectURL(f);
+  e.target.value="";
+}
+
 function loadFromURL(){
   const q=new URLSearchParams(location.search);
   if(!q.toString())return;
@@ -702,6 +808,7 @@ suppressURL=false;
 loadFromURL();
 document.getElementById("fen-input").addEventListener("keydown",e=>{if(e.key==="Enter")loadFEN();});
 document.getElementById("coach-email").addEventListener("keydown",e=>{if(e.key==="Enter")saveEmail();});
+document.getElementById("img-input").addEventListener("change",onImageUpload);
 </script>
 </body>
 </html>
