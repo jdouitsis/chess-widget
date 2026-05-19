@@ -210,7 +210,9 @@ let historyIdx  = 0;    // current position in fullHistory (0 = start)
 let moveHistory = [];   // for notation display
 
 let flipped=false, enPassant=null, castling={wK:true,wQ:true,bK:true,bQ:true};
+let startFen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 let coachEmail=""; try{coachEmail=localStorage.getItem("coachEmail")||"";}catch(e){}
+let suppressURL=false;
 
 // Drag state
 let dragFrom = null;   // board index being dragged
@@ -458,7 +460,7 @@ function jumpToMove(n) {
     board=[...s.board]; turn=s.turn; enPassant=s.enPassant; castling={...s.castling};
   }
   selected=null; legalMoves=[];
-  renderBoard(); updateStatus(); updateNavUI();
+  renderBoard(); updateStatus(); updateNavUI(); updateShareURL();
 }
 function updateNavUI() {
   document.getElementById("nav-start").disabled = historyIdx===0;
@@ -584,10 +586,27 @@ function updateStatus(){
   document.getElementById("status-badge").textContent=text;document.getElementById("turn-text").textContent=text;
   document.getElementById("turn-dot").className="turn-dot "+(turn==="w"?"white":"black");
 }
+function encFen(f){return btoa(unescape(encodeURIComponent(f)));}
+function decFen(s){return decodeURIComponent(escape(atob(s)));}
+function movesParam(){
+  return moveHistory.map(m=>idxSq(m.from)+idxSq(m.to)).join("");
+}
+function buildShareURL(){
+  const p=new URLSearchParams();
+  if(startFen!=="rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1") p.set("start",encFen(startFen));
+  const mv=movesParam(); if(mv) p.set("moves",mv);
+  if(moveHistory.length && historyIdx!==moveHistory.length) p.set("idx",historyIdx);
+  if(flipped) p.set("flip","1");
+  if(coachEmail) p.set("email",coachEmail);
+  const qs=p.toString();
+  return window.location.href.split("?")[0]+(qs?"?"+qs:"");
+}
 function updateShareURL(){
-  const fen=boardToFEN(board,turn,enPassant,castling),enc=btoa(unescape(encodeURIComponent(fen)));
-  const url=window.location.href.split("?")[0]+"?fen="+encodeURIComponent(enc);
+  const url=buildShareURL();
   const el=document.getElementById("share-box");el.textContent=url.length>58?url.slice(0,55)+"\u2026":url;el._url=url;
+  if(!suppressURL){
+    try{ history.replaceState(null,"",url); }catch(e){}
+  }
 }
 
 function toast(msg){const el=document.getElementById("toast");el.textContent=msg;el.classList.add("show");setTimeout(()=>el.classList.remove("show"),1800);}
@@ -597,7 +616,7 @@ function copyFEN(){const f=boardToFEN(board,turn,enPassant,castling);document.ge
 function loadFEN(){
   const v=document.getElementById("fen-input").value.trim();if(!v)return;
   try{
-    board=parseFEN(v);moveHistory=[];
+    board=parseFEN(v);startFen=v;moveHistory=[];
     fullHistory=[{board:[...board],turn,enPassant,castling:{...castling},notation:"",captured:false}];
     historyIdx=0;selected=null;legalMoves=[];
     renderBoard();updateStatus();updateShareURL();updateNavUI();
@@ -607,36 +626,68 @@ function loadFEN(){
 function undoMove(){
   if(historyIdx===0)return;
   navStep(-1);
-  // Also trim forward history
   fullHistory=fullHistory.slice(0,historyIdx+1);
   moveHistory=moveHistory.slice(0,historyIdx);
-  updateNavUI();
+  updateNavUI();updateShareURL();
   document.getElementById("undo-btn").disabled=historyIdx===0;
 }
 function resetBoard(){
-  board=parseFEN(startFEN());moveHistory=[];
+  startFen=startFEN();
+  board=parseFEN(startFen);moveHistory=[];
   fullHistory=[{board:[...board],turn,enPassant,castling:{...castling},notation:"",captured:false}];
   historyIdx=0;selected=null;legalMoves=[];enPassant=null;castling={wK:true,wQ:true,bK:true,bQ:true};turn="w";
   renderBoard();updateStatus();updateShareURL();updateNavUI();
   document.getElementById("undo-btn").disabled=true;document.getElementById("fen-input").value="";
 }
 function clearBoard(){
+  startFen="8/8/8/8/8/8/8/8 w - - 0 1";
   board=Array(64).fill(null);moveHistory=[];
   fullHistory=[{board:[...board],turn:"w",enPassant:null,castling:{wK:false,wQ:false,bK:false,bQ:false},notation:"",captured:false}];
   historyIdx=0;selected=null;legalMoves=[];enPassant=null;castling={wK:false,wQ:false,bK:false,bQ:false};turn="w";
   renderBoard();updateStatus();updateShareURL();updateNavUI();
   document.getElementById("undo-btn").disabled=true;toast("Board cleared");
 }
-function flipBoard(){flipped=!flipped;renderBoard();}
-function saveEmail(){const v=document.getElementById("coach-email").value.trim();if(v){coachEmail=v;try{localStorage.setItem("coachEmail",v);}catch(e){}toast("Email saved");}}
+function flipBoard(){flipped=!flipped;renderBoard();updateShareURL();}
+function saveEmail(){const v=document.getElementById("coach-email").value.trim();if(v){coachEmail=v;try{localStorage.setItem("coachEmail",v);}catch(e){}updateShareURL();toast("Email saved");}}
 function sendToCoach(){
   const fen=boardToFEN(board,turn,enPassant,castling);
   const line=moveHistory.map((m,i)=>i%2===0?`${Math.floor(i/2)+1}.${m.notation}`:m.notation).join(" ");
   window.open("https://mail.google.com/mail/?view=cm&fs=1&to="+encodeURIComponent(coachEmail)+"&su="+encodeURIComponent("Chess puzzle solution")+"&body="+encodeURIComponent("Hi Coach Mark,\n\nHere is my solution:\n\n"+(line||"(no moves yet)")+"\n\nFEN: "+fen+"\n\nThanks!"),"_blank");
 }
 function loadFromURL(){
-  const enc=new URLSearchParams(location.search).get("fen");
-  if(enc)try{document.getElementById("fen-input").value=decodeURIComponent(escape(atob(decodeURIComponent(enc))));loadFEN();}catch(e){}
+  const q=new URLSearchParams(location.search);
+  if(!q.toString())return;
+  suppressURL=true;
+  try{
+    const startEnc=q.get("start"), fenEnc=q.get("fen");
+    if(startEnc){
+      const f=decFen(startEnc);
+      startFen=f;board=parseFEN(f);
+    } else if(fenEnc){
+      const f=decFen(fenEnc);
+      startFen=f;board=parseFEN(f);
+    }
+    moveHistory=[];
+    fullHistory=[{board:[...board],turn,enPassant,castling:{...castling},notation:"",captured:false}];
+    historyIdx=0;
+    const mv=q.get("moves");
+    if(mv){
+      for(let i=0;i+3<mv.length;i+=4){
+        const from=sqIdx(mv.slice(i,i+2)), to=sqIdx(mv.slice(i+2,i+4));
+        const legal=legalMovesFor(board,from,turn,enPassant);
+        if(!legal.includes(to))break;
+        makeMove(from,to);
+      }
+    }
+    const idx=parseInt(q.get("idx"),10);
+    if(!isNaN(idx)) jumpToMove(idx);
+    if(q.get("flip")==="1"){flipped=true;}
+    const em=q.get("email");
+    if(em){coachEmail=em;document.getElementById("coach-email").value=em;try{localStorage.setItem("coachEmail",em);}catch(e){}}
+    renderBoard();updateStatus();updateNavUI();
+  }catch(e){console.warn("URL parse failed",e);}
+  suppressURL=false;
+  updateShareURL();
 }
 
 // ─── BOOT ─────────────────────────────────────────────────────────────────────
@@ -645,7 +696,10 @@ board=parseFEN(startFEN());
 fullHistory=[{board:[...board],turn,enPassant,castling:{...castling},notation:"",captured:false}];
 historyIdx=0;
 if(coachEmail)document.getElementById("coach-email").value=coachEmail;
-renderBoard();updateStatus();updateShareURL();updateNavUI();loadFromURL();
+suppressURL=true;
+renderBoard();updateStatus();updateShareURL();updateNavUI();
+suppressURL=false;
+loadFromURL();
 document.getElementById("fen-input").addEventListener("keydown",e=>{if(e.key==="Enter")loadFEN();});
 document.getElementById("coach-email").addEventListener("keydown",e=>{if(e.key==="Enter")saveEmail();});
 </script>
